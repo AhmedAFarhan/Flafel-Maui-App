@@ -1,0 +1,95 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main 
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup .Net
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Install MAUI
+      run: dotnet workload install maui
+
+    - name: Restore
+      run: dotnet restore
+      working-directory: ./Flafel-Maui-App/Flafel.Maui
+
+    - name: Build Application
+      run: dotnet build -c Release -f:net8.0-windows10.0.19041.0
+      working-directory: ./Flafel-Maui-App/Flafel.Maui
+
+    - name: Decoding Signing Certificate
+      run: |
+        echo "${{ secrets.SIGNING_CERTIFICATE_BASE_64_CONTENT }}" > cert.asc
+        certutil -decode cert.asc cert.pfx
+
+    - name: Installing Signing Certificate
+      run: certutil -user -p ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }} -Silent -importpfx cert.pfx NoRoot
+
+
+    - name: Publish Application
+      run: dotnet publish -c Release -f:net8.0-windows10.0.19041.0 /p:GenerateAppxPackageOnBuild=true /p:AppxPackageSigningEnabled=true /p:PackageCertificateThumbprint=${{ secrets.SIGNING_CERTIFICATE_THUMBPRINT }}
+      working-directory: ./Flafel-Maui-App/Flafel.Maui
+
+
+    - name: Extracting Version
+      id: extractVersion
+      shell: pwsh
+      run: |
+        $xml = [Xml] (Get-Content ./Flafel-Maui-App/Flafel.Maui/Flafel.Maui.csproj)
+        [string] $version = [Version] $xml.Project.PropertyGroup.ApplicationDisplayVersion
+        echo "version=$($version)" >> $env:GITHUB_OUTPUT
+        
+
+    - name: Creating Version
+      uses: actions/github-script@v5
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          github.rest.git.createRef({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha: context.sha,
+            ref: 'refs/tags/v${{ steps.extractVersion.outputs.version }}'
+          })
+
+    - name: Renaming Auto-Update Installer
+      shell: pwsh
+      run: Rename-Item ./Flafel-Maui-App/Flafel.Maui/bin/Release/net8.0-windows10.0.19041.0/win10-x64/AppPackages/Flafel.Maui_${{ steps.extractVersion.outputs.version }}.1_Test/Flafel.Maui_${{ steps.extractVersion.outputs.version }}.1_x64.msix AutoUpdate.msix
+
+
+    - name: Renaming Certificate
+      shell: pwsh
+      run: Rename-Item ./Flafel-Maui-App/Flafel.Maui/bin/Release/net8.0-windows10.0.19041.0/win10-x64/AppPackages/Flafel.Maui_${{ steps.extractVersion.outputs.version }}.1_Test/Flafel.Maui_${{ steps.extractVersion.outputs.version }}.1_x64.cer FlafelApp.cer
+
+
+    - name: Creating Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.extractVersion.outputs.version }}
+        files: |
+          ./Flafel-Maui-App/Flafel.Maui/FlafelApp.appinstaller
+          ./Flafel-Maui-App/Flafel.Maui/bin/Release/net8.0-windows10.0.19041.0/win10-x64/AppPackages/Flafel.Maui_${{ steps.extractVersion.outputs.version }}.1_Test/AutoUpdate.msix
+          ./Flafel-Maui-App/Flafel.Maui/bin/Release/net8.0-windows10.0.19041.0/win10-x64/AppPackages/Flafel.Maui_${{ steps.extractVersion.outputs.version }}.1_Test/FlafelApp.cer
+
+    # - name: Uploading artifact
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: Build
+    #     path: |
+    #       ./Flafel-Maui-App/Flafel.Maui/bin/Release/net8.0-windows10.0.19041.0/win10-x64/AppPackages/**/*.msix
+    #       ./Flafel-Maui-App/Flafel.Maui/bin/Release/net8.0-windows10.0.19041.0/win10-x64/AppPackages/**/*.cer
